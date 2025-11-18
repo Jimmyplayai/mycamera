@@ -152,3 +152,7 @@ Thumbs.db
 .claude/
 >>>>>>> 32e9d818efa98600af0abb2f302c8b09dea5c96a
 celerybeat-schedule*
+*.pt
+*.pth
+*.ckpt
+*.weights
