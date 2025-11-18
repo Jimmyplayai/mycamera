@@ -63,3 +63,45 @@ class RecordLog(models.Model):
 
         # 拼接 URL
         return f"{base_url}/CameraRecordings/{relative_path}"
+
+
+class PersonDetection(models.Model):
+    """人物检测记录"""
+    record_log = models.ForeignKey(
+        RecordLog,
+        on_delete=models.CASCADE,
+        related_name='detections',
+        verbose_name="录制日志"
+    )
+    frame_number = models.IntegerField(verbose_name="帧序号")
+    timestamp = models.FloatField(verbose_name="视频时间戳(秒)")
+    image_path = models.CharField(max_length=500, verbose_name="截图路径")
+    confidence = models.FloatField(verbose_name="检测置信度")
+    bbox = models.JSONField(null=True, blank=True, verbose_name="边界框坐标")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+
+    class Meta:
+        verbose_name = "人物检测记录"
+        verbose_name_plural = "人物检测记录"
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['record_log', 'timestamp']),
+            models.Index(fields=['-created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.record_log.camera_ip} - Frame {self.frame_number} - {self.confidence:.2f}"
+
+    def get_image_url(self):
+        """生成图片访问 URL"""
+        if not self.image_path:
+            return None
+
+        base_url = os.getenv('RESOURCE_BASE_URL', 'http://resource.haoke.vip')
+        pics_base_dir = os.getenv('PICS_BASE_DIR', '/workspace/ai_project_data/camera_env/server_sync/ResouceData/CameraWarningPics')
+
+        # 将本地路径转换为相对路径
+        relative_path = self.image_path.replace(pics_base_dir, '').lstrip('/')
+
+        # 拼接 URL
+        return f"{base_url}/CameraWarningPics/{relative_path}"
