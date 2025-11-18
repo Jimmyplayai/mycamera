@@ -37,6 +37,9 @@ ENV/
 .env
 .env.local
 .env.*.local
+.env.dev
+.env.prod
+# Note: .env.example should be committed to git as a template
 
 # Django
 *.log
