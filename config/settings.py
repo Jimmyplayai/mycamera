@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
+    'django.contrib.staticfiles',
     'apps',
     'apps.cameras'
 ]
@@ -98,8 +99,16 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+      'ENGINE': 'django.db.backends.mysql',
+      'NAME': os.getenv('DB_NAME', 'mycamera_db'),
+      'USER': os.getenv('DB_USER', 'root'),
+      'PASSWORD': os.getenv('DB_PASSWORD', ''),
+      'HOST': os.getenv('DB_HOST', 'localhost'),
+      'PORT': os.getenv('DB_PORT', '3306'),
+      'OPTIONS': {
+          'charset': 'utf8mb4',
+          'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+      }
     }
 }
 
@@ -148,7 +157,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # Redis 作为 Celery Broker
-CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'amqp://guest:guest@localhost:5672//')
 
 # 可选：保存任务结果
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/1')
