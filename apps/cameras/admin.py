@@ -6,7 +6,7 @@ from .models import RecordLog, PersonDetection
 @admin.register(RecordLog)
 class RecordLogAdmin(admin.ModelAdmin):
     list_display = ['id', 'camera_ip', 'start_time_display', 'duration_display', 'status_display', 'file_size_display', 'detection_count_display', 'video_url_display']
-    list_filter = ['status', 'camera_ip', 'start_time']
+    list_filter = ['status', 'analysis_status', 'camera_ip', 'start_time']
     search_fields = ['camera_ip', 'task_id', 'file_path', 'error_message']
     readonly_fields = ['task_id', 'start_time', 'end_time', 'duration_display', 'video_preview', 'detection_summary']
     date_hierarchy = 'start_time'
@@ -96,16 +96,36 @@ class RecordLogAdmin(admin.ModelAdmin):
     video_preview.short_description = '视频预览'
 
     def detection_count_display(self, obj):
-        """显示检测到的人物数量"""
+        """显示检测到的人物数量和分析状态"""
         count = obj.detections.count()
-        if count > 0:
-            from django.urls import reverse
-            url = reverse('admin:cameras_persondetection_changelist') + f'?record_log__id__exact={obj.id}'
-            return format_html(
-                '<a href="{}" style="color: #0066cc; font-weight: bold;">{} 个人物</a>',
-                url, count
-            )
-        return format_html('<span style="color: #999;">无检测</span>')
+
+        # 根据分析状态显示不同内容
+        if obj.analysis_status == 'pending':
+            return format_html('<span style="color: #999; font-style: italic;">⏳ 待检测</span>')
+        elif obj.analysis_status == 'processing':
+            return format_html('<span style="color: #0066cc; font-weight: bold;">🔄 检测中...</span>')
+        elif obj.analysis_status == 'failed':
+            return format_html('<span style="color: #ff4444; font-weight: bold;">❌ 检测失败</span>')
+        elif obj.analysis_status == 'completed':
+            if count > 0:
+                from django.urls import reverse
+                url = reverse('admin:cameras_persondetection_changelist') + f'?record_log__id__exact={obj.id}'
+                return format_html(
+                    '<a href="{}" style="color: #28a745; font-weight: bold;">✓ {} 个人物</a>',
+                    url, count
+                )
+            else:
+                return format_html('<span style="color: #999;">✓ 已检测 - 无人物</span>')
+        else:
+            # 兼容旧数据（没有 analysis_status 字段时）
+            if count > 0:
+                from django.urls import reverse
+                url = reverse('admin:cameras_persondetection_changelist') + f'?record_log__id__exact={obj.id}'
+                return format_html(
+                    '<a href="{}" style="color: #0066cc; font-weight: bold;">{} 个人物</a>',
+                    url, count
+                )
+            return format_html('<span style="color: #999;">无检测</span>')
     detection_count_display.short_description = '人物检测'
 
     def detection_summary(self, obj):
@@ -113,14 +133,42 @@ class RecordLogAdmin(admin.ModelAdmin):
         detections = obj.detections.all()[:10]  # 只显示前10个
         total_count = obj.detections.count()
 
+        html = '<div style="margin-top: 10px;">'
+
+        # 显示分析状态
+        status_colors = {
+            'pending': '#999',
+            'processing': '#0066cc',
+            'completed': '#28a745',
+            'failed': '#ff4444'
+        }
+        status_text = obj.get_analysis_status_display() if hasattr(obj, 'analysis_status') else '未知'
+        status_color = status_colors.get(obj.analysis_status, '#999')
+
+        html += f'<p><strong>分析状态：</strong><span style="color: {status_color}; font-weight: bold;">{status_text}</span></p>'
+
+        if obj.analysis_time:
+            analysis_time_str = obj.analysis_time.strftime('%Y-%m-%d %H:%M:%S')
+            html += f'<p><strong>分析时间：</strong>{analysis_time_str}</p>'
+
         if total_count == 0:
-            return format_html('<p style="color: #999;">暂无人物检测记录</p>')
+            if obj.analysis_status == 'completed':
+                html += '<p style="color: #999; margin-top: 10px;">✓ 已完成检测，未发现人物</p>'
+            elif obj.analysis_status == 'pending':
+                html += '<p style="color: #999; margin-top: 10px;">⏳ 等待分析...</p>'
+            elif obj.analysis_status == 'processing':
+                html += '<p style="color: #0066cc; margin-top: 10px;">🔄 正在分析中...</p>'
+            elif obj.analysis_status == 'failed':
+                html += '<p style="color: #ff4444; margin-top: 10px;">❌ 分析失败</p>'
+            else:
+                html += '<p style="color: #999; margin-top: 10px;">暂无人物检测记录</p>'
+            html += '</div>'
+            return format_html(html)
 
         from django.urls import reverse
         list_url = reverse('admin:cameras_persondetection_changelist') + f'?record_log__id__exact={obj.id}'
 
-        html = f'<div style="margin-top: 10px;">'
-        html += f'<p><strong>检测到 {total_count} 个人物</strong> '
+        html += f'<p style="margin-top: 10px;"><strong>检测到 {total_count} 个人物</strong> '
         html += f'<a href="{list_url}" target="_blank" style="color: #0066cc;">查看全部 →</a></p>'
         html += '<div style="display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px;">'
 
@@ -152,14 +200,19 @@ class RecordLogAdmin(admin.ModelAdmin):
         from apps.cameras.tasks import analyze_video_for_person
         import os
 
-        # 只处理成功录制且未分析的视频
-        queryset = queryset.filter(status='success', detections__isnull=True)
+        # 只处理成功录制且未分析的视频（状态为 pending 或 failed）
+        queryset = queryset.filter(status='success').exclude(analysis_status='completed')
 
         analyzed_count = 0
         skipped_count = 0
 
         for record in queryset:
             if not record.file_path or not os.path.exists(record.file_path):
+                skipped_count += 1
+                continue
+
+            # 跳过正在处理中的
+            if record.analysis_status == 'processing':
                 skipped_count += 1
                 continue
 
@@ -170,7 +223,7 @@ class RecordLogAdmin(admin.ModelAdmin):
         if analyzed_count > 0:
             self.message_user(
                 request,
-                f'已提交 {analyzed_count} 个视频到分析队列，跳过 {skipped_count} 个（文件不存在或已分析）',
+                f'已提交 {analyzed_count} 个视频到分析队列，跳过 {skipped_count} 个（文件不存在、正在分析或已完成）',
                 level='success'
             )
         else:
@@ -204,6 +257,11 @@ class RecordLogAdmin(admin.ModelAdmin):
             if old_detections > 0:
                 record.detections.all().delete()
                 deleted_count += old_detections
+
+            # 重置分析状态
+            record.analysis_status = 'pending'
+            record.analysis_time = None
+            record.save(update_fields=['analysis_status', 'analysis_time'])
 
             # 异步执行分析任务
             analyze_video_for_person.delay(record.id)

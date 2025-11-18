@@ -137,11 +137,11 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Shanghai'
 
 USE_I18N = True
 
-USE_TZ = True
+USE_TZ = False
 
 
 # Static files (CSS, JavaScript, Images)
@@ -165,6 +165,18 @@ CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:63
 # 时区
 CELERY_TIMEZONE = os.getenv('CELERY_TIMEZONE', 'Asia/Shanghai')
 CELERY_ENABLE_UTC = True
+
+# Celery 并发控制 - 限制视频分析任务的并发数
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # 一次只取一个任务
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 10  # 每个 worker 处理10个任务后重启（防止内存泄漏）
+
+# 任务路由 - 视频分析任务使用专用队列
+CELERY_TASK_ROUTES = {
+    'apps.cameras.tasks.analyze_video_for_person': {
+        'queue': 'video_analysis',
+        'routing_key': 'video.analysis',
+    },
+}
 
 CELERY_BEAT_SCHEDULE = {
     "record_camera_1": {

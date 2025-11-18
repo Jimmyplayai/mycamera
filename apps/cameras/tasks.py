@@ -15,6 +15,60 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def get_gpu_stats():
+    """获取 GPU 利用率和显存使用情况"""
+    if not torch.cuda.is_available():
+        return None
+
+    try:
+        # 使用 nvidia-smi 获取详细信息
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            values = result.stdout.strip().split(', ')
+            if len(values) >= 4:
+                mem_used = float(values[1])
+                mem_total = float(values[2])
+                mem_percent = (mem_used / mem_total * 100) if mem_total > 0 else 0
+                return {
+                    'gpu_util': f"{values[0]}%",
+                    'mem_used': f"{int(mem_used)}MB",
+                    'mem_total': f"{int(mem_total)}MB",
+                    'mem_percent': f"{mem_percent:.1f}%",
+                    'temperature': f"{values[3]}°C"
+                }
+    except Exception as e:
+        logger.debug(f"nvidia-smi 获取失败: {e}")
+
+    # 备用方案：使用 PyTorch
+    try:
+        device = torch.cuda.current_device()
+        mem_allocated = torch.cuda.memory_allocated(device) / 1024**2
+        mem_total = torch.cuda.get_device_properties(device).total_memory / 1024**2
+        mem_percent = (mem_allocated / mem_total * 100) if mem_total > 0 else 0
+        return {
+            'gpu_util': 'N/A',
+            'mem_used': f"{mem_allocated:.0f}MB",
+            'mem_total': f"{mem_total:.0f}MB",
+            'mem_percent': f"{mem_percent:.1f}%",
+            'temperature': 'N/A'
+        }
+    except Exception as e:
+        logger.debug(f"PyTorch GPU 信息获取失败: {e}")
+        return None
+
+
+def log_gpu_stats(prefix=""):
+    """打印 GPU 状态日志"""
+    stats = get_gpu_stats()
+    if stats:
+        logger.info(f"{prefix}GPU状态: 利用率={stats['gpu_util']}, 显存={stats['mem_used']}/{stats['mem_total']} ({stats['mem_percent']}), 温度={stats['temperature']}")
+    return stats
+
+
 @shared_task(bind=True, max_retries=3, time_limit=120, soft_time_limit=90)
 def record_camera_task(self, ip, user, password, port, path, base_dir=None):
     # 导入模型（避免循环导入）
@@ -100,7 +154,15 @@ def record_camera_task(self, ip, user, password, port, path, base_dir=None):
         return f"{ip} 录制失败: {str(e)}"
 
 
-@shared_task(bind=True, max_retries=2, time_limit=300)
+@shared_task(
+    bind=True,
+    max_retries=3,
+    time_limit=300,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=600,
+    retry_jitter=True
+)
 def analyze_video_for_person(self, record_log_id):
     """
     分析视频中的人物并保存截图
@@ -109,13 +171,23 @@ def analyze_video_for_person(self, record_log_id):
         record_log_id: RecordLog 的 ID
     """
     from apps.cameras.models import RecordLog, PersonDetection
+    import gc
+
+    model = None
+    cap = None
 
     try:
         # 获取录制日志
         log = RecordLog.objects.get(id=record_log_id)
 
+        # 标记为检测中
+        log.analysis_status = 'processing'
+        log.save(update_fields=['analysis_status'])
+
         if not log.file_path or not os.path.exists(log.file_path):
             logger.error(f"视频文件不存在: {log.file_path}")
+            log.analysis_status = 'failed'
+            log.save(update_fields=['analysis_status'])
             return f"视频文件不存在"
 
         # 获取配置
@@ -124,17 +196,35 @@ def analyze_video_for_person(self, record_log_id):
         sample_interval = int(os.getenv('DETECTION_SAMPLE_INTERVAL', '1'))
         confidence_threshold = float(os.getenv('DETECTION_CONFIDENCE_THRESHOLD', '0.5'))
         dedup_window = int(os.getenv('DETECTION_DEDUP_WINDOW', '10'))
-        batch_size = int(os.getenv('DETECTION_BATCH_SIZE', '16'))
+        batch_size = int(os.getenv('DETECTION_BATCH_SIZE', '8'))  # 减小批处理大小
         use_gpu = os.getenv('USE_GPU', 'True').lower() in ('true', '1', 't')
 
         logger.info(f"开始分析视频: {log.file_path}")
         logger.info(f"配置: 采样间隔={sample_interval}s, 置信度={confidence_threshold}, GPU={use_gpu}")
 
+        # 打印初始 GPU 状态
+        log_gpu_stats("【任务开始】")
+
+        # 清理 GPU 缓存
+        if use_gpu and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+
         # 加载 YOLO 模型
         device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
+
+        # 使用上下文管理器确保资源释放
         model = YOLO(model_path)
-        model.to(device)
+
+        if device == 'cuda':
+            # 设置 CUDA 环境变量避免多进程冲突
+            os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+            model.to(device)
+        else:
+            model.to(device)
+
         logger.info(f"YOLO 模型加载完成，使用设备: {device}")
+        log_gpu_stats("【模型加载后】")
 
         # 打开视频
         cap = cv2.VideoCapture(log.file_path)
@@ -218,6 +308,14 @@ def analyze_video_for_person(self, record_log_id):
 
         cap.release()
 
+        # 标记为检测完成
+        log.analysis_status = 'completed'
+        log.analysis_time = timezone.now()
+        log.save(update_fields=['analysis_status', 'analysis_time'])
+
+        # 打印最终 GPU 状态
+        log_gpu_stats("【分析完成】")
+
         logger.info(f"视频分析完成: {log.file_path}, 检测到 {detection_count} 个人物")
         return f"分析完成，检测到 {detection_count} 个人物"
 
@@ -227,7 +325,35 @@ def analyze_video_for_person(self, record_log_id):
 
     except Exception as e:
         logger.error(f"视频分析失败: {str(e)}", exc_info=True)
-        raise self.retry(exc=e, countdown=60, max_retries=2)
+        # 标记为检测失败
+        try:
+            log = RecordLog.objects.get(id=record_log_id)
+            log.analysis_status = 'failed'
+            log.save(update_fields=['analysis_status'])
+        except:
+            pass
+        raise
+
+    finally:
+        # 清理资源
+        if cap is not None:
+            try:
+                cap.release()
+            except:
+                pass
+
+        if model is not None:
+            try:
+                del model
+            except:
+                pass
+
+        # 清理 GPU 缓存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        gc.collect()
+        logger.info(f"资源已清理")
 
 
 def process_batch(model, frames, frame_info, log, output_dir, video_filename,

@@ -10,6 +10,13 @@ class RecordLog(models.Model):
         ('timeout', '超时'),
     ]
 
+    ANALYSIS_STATUS_CHOICES = [
+        ('pending', '待检测'),
+        ('processing', '检测中'),
+        ('completed', '已完成'),
+        ('failed', '检测失败'),
+    ]
+
     camera_ip = models.CharField(max_length=50, verbose_name="摄像头IP")
     camera_user = models.CharField(max_length=50, verbose_name="用户名")
     task_id = models.CharField(max_length=200, null=True, blank=True, verbose_name="任务ID")
@@ -28,6 +35,15 @@ class RecordLog(models.Model):
     file_size = models.BigIntegerField(null=True, blank=True, verbose_name="文件大小(字节)")
 
     error_message = models.TextField(null=True, blank=True, verbose_name="错误信息")
+
+    # 人物检测状态
+    analysis_status = models.CharField(
+        max_length=20,
+        choices=ANALYSIS_STATUS_CHOICES,
+        default='pending',
+        verbose_name="检测状态"
+    )
+    analysis_time = models.DateTimeField(null=True, blank=True, verbose_name="检测完成时间")
 
     class Meta:
         verbose_name = "录制日志"
