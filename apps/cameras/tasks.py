@@ -11,7 +11,9 @@ logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True, max_retries=3, time_limit=120, soft_time_limit=90)
-def record_camera_task(self, ip, user, password, port, path, base_dir="/workspace/ai_project_data/camera_env/server_sync/ResouceData/CameraRecordings"):
+def record_camera_task(self, ip, user, password, port, path, base_dir=None):
+    if base_dir is None:
+        base_dir = os.getenv("CAMERA_BASE_DIR", "/workspace/ai_project_data/camera_env/server_sync/ResouceData/CameraRecordings")
     print(f"录制摄像头流: {ip}")
     tz = pytz.timezone("Asia/Shanghai")  # 设置时区
     now = datetime.now(tz)

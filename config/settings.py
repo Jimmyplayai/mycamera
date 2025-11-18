@@ -14,23 +14,24 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 from celery.schedules import crontab
-load_dotenv(".env")  # 加载 .env 文件
-load_dotenv("/workspace/blip2_nllb_data/django_test/.env")  # 绝对路径
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# 加载 .env 文件
+load_dotenv(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-=)if-ey+owf(*eurzepjo&o2&4jvffi6=rex&ln38uqf$ykrsp'
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-=)if-ey+owf(*eurzepjo&o2&4jvffi6=rex&ln38uqf$ykrsp')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DEBUG', 'True').lower() in ('true', '1', 't')
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',')
 
 
 # Application definition
@@ -130,13 +131,13 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # Redis 作为 Celery Broker
-CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 
 # 可选：保存任务结果
-CELERY_RESULT_BACKEND = 'redis://localhost:6379/1'
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/1')
 
 # 时区
-CELERY_TIMEZONE = 'Asia/Shanghai'
+CELERY_TIMEZONE = os.getenv('CELERY_TIMEZONE', 'Asia/Shanghai')
 CELERY_ENABLE_UTC = True
 
 CELERY_BEAT_SCHEDULE = {

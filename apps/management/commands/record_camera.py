@@ -20,14 +20,14 @@ class Command(BaseCommand):
                 "user": os.getenv("CAMERA1_USER"),
                 "password": os.getenv("CAMERA1_PASSWORD"),
                 "port": os.getenv("CAMERA1_PORT"),
-                "path": os.getenv("CAMERA1_IP"),
+                "path": os.getenv("CAMERA1_PATH"),
             },
             {
                 "ip": os.getenv("CAMERA2_IP"),
                 "user": os.getenv("CAMERA2_USER"),
                 "password": os.getenv("CAMERA2_PASSWORD"),
                 "port": os.getenv("CAMERA2_PORT"),
-                "path": os.getenv("CAMERA2_IP"),
+                "path": os.getenv("CAMERA2_PATH"),
             }
         ]
 
