@@ -425,12 +425,16 @@ def process_batch(model, frames, frame_info, log, output_dir, video_filename,
     retry_backoff_max=600,
     retry_jitter=True
 )
-def generate_captions_batch(self):
+def generate_captions_batch(self, detection_ids=None):
     """
     批量生成图片描述（使用 BLIP2 模型）
 
     由 Celery Beat 定时触发，每10分钟执行一次
     查询所有 caption_status='pending' 的图片，批量生成英文描述
+
+    Args:
+        detection_ids: 可选，要处理的 PersonDetection ID 列表。
+                      如果为 None，则处理所有 pending 状态的图片
     """
     from apps.cameras.models import PersonDetection
     from transformers import Blip2Processor, Blip2ForConditionalGeneration
@@ -443,7 +447,7 @@ def generate_captions_batch(self):
 
     try:
         # 配置参数
-        model_path = '/workspace/ai_project_data/camera_env/model/blip2-flan-t5-xl'
+        model_path = os.getenv('BLIP2_MODEL_PATH', '/workspace/ai_project_data/camera_env/model/blip2-flan-t5-xl')
         batch_size = int(os.getenv('BLIP2_BATCH_SIZE', '8'))  # 每批处理8张图片
         max_images = int(os.getenv('BLIP2_MAX_IMAGES', '100'))  # 一次最多处理100张
         use_gpu = os.getenv('USE_GPU', 'True').lower() in ('true', '1', 't')
@@ -456,9 +460,18 @@ def generate_captions_batch(self):
         log_gpu_stats("【BLIP2任务开始】")
 
         # 查询待处理的图片
-        pending_detections = PersonDetection.objects.filter(
-            caption_status='pending'
-        ).select_related('record_log').order_by('created_at')[:max_images]
+        if detection_ids:
+            # 只处理指定的 ID 列表
+            pending_detections = PersonDetection.objects.filter(
+                id__in=detection_ids,
+                caption_status='pending'
+            ).select_related('record_log').order_by('created_at')
+            logger.info(f"指定处理 {len(detection_ids)} 个 ID")
+        else:
+            # 处理所有 pending 的记录
+            pending_detections = PersonDetection.objects.filter(
+                caption_status='pending'
+            ).select_related('record_log').order_by('created_at')[:max_images]
 
         count = pending_detections.count()
         if count == 0:

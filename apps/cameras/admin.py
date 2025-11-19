@@ -292,7 +292,7 @@ class PersonDetectionAdmin(admin.ModelAdmin):
     date_hierarchy = 'created_at'
     list_per_page = 50
     ordering = ['-created_at']
-    actions = ['generate_captions_for_all_pending']
+    actions = ['generate_captions_for_selected', 'generate_captions_for_all_pending']
 
     fieldsets = (
         ('关联信息', {
@@ -428,6 +428,43 @@ class PersonDetectionAdmin(admin.ModelAdmin):
     caption_status_display.short_description = '描述状态'
     caption_status_display.admin_order_field = 'caption_status'
 
+    def generate_captions_for_selected(self, request, queryset):
+        """只为用户选中的记录生成描述"""
+        from apps.cameras.tasks import generate_captions_batch
+
+        # 获取选中记录中 pending 状态的
+        pending_queryset = queryset.filter(caption_status='pending')
+        pending_count = pending_queryset.count()
+        selected_count = queryset.count()
+
+        if pending_count == 0:
+            self.message_user(
+                request,
+                f'选中的 {selected_count} 条记录中，没有待处理的图片（caption_status=pending）',
+                level='warning'
+            )
+            return
+
+        # 获取 ID 列表
+        pending_ids = list(pending_queryset.values_list('id', flat=True))
+
+        # 传递给任务
+        result = generate_captions_batch.delay(detection_ids=pending_ids)
+
+        self.message_user(
+            request,
+            f'✓ 已提交批量描述生成任务到队列！\n'
+            f'- 选中记录数: {selected_count} 条\n'
+            f'- 待处理图片数: {pending_count} 张\n'
+            f'- 任务ID: {result.id}\n'
+            f'- 模型: BLIP2-FLAN-T5-XL\n'
+            f'- 说明: 任务将在 video_analysis 队列中依次执行\n'
+            f'- 提示: 刷新页面查看进度',
+            level='success'
+        )
+
+    generate_captions_for_selected.short_description = '🎯 生成选中记录的描述'
+
     def generate_captions_for_all_pending(self, request, queryset):
         """手动触发 BLIP2 批量生成图片描述（处理所有 pending 状态的图片）"""
         from apps.cameras.tasks import generate_captions_batch
@@ -457,4 +494,4 @@ class PersonDetectionAdmin(admin.ModelAdmin):
             level='success'
         )
 
-    generate_captions_for_all_pending.short_description = '🚀 批量生成图片描述（BLIP2）'
+    generate_captions_for_all_pending.short_description = '🚀 生成所有待处理图片的描述（忽略选择）'
