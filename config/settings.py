@@ -176,6 +176,10 @@ CELERY_TASK_ROUTES = {
         'queue': 'video_analysis',
         'routing_key': 'video.analysis',
     },
+    'apps.cameras.tasks.generate_captions_batch': {
+        'queue': 'video_analysis',  # 和YOLO共用队列，避免并行冲突
+        'routing_key': 'video.caption',
+    },
 }
 
 CELERY_BEAT_SCHEDULE = {
@@ -200,5 +204,13 @@ CELERY_BEAT_SCHEDULE = {
             int(os.getenv("CAMERA2_PORT")),
             os.getenv("CAMERA2_PATH")
         ),
+    },
+    # 批量生成图片描述 - 每10分钟执行一次
+    "batch_generate_captions": {
+        "task": "apps.cameras.tasks.generate_captions_batch",
+        "schedule": crontab(minute="*/10"),  # 每10分钟执行一次
+        "options": {
+            "expires": 540,  # 任务9分钟后过期，避免堆积
+        },
     },
 }

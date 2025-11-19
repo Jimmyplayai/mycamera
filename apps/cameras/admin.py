@@ -285,13 +285,14 @@ class RecordLogAdmin(admin.ModelAdmin):
 
 @admin.register(PersonDetection)
 class PersonDetectionAdmin(admin.ModelAdmin):
-    list_display = ['id', 'camera_ip_display', 'record_log_link', 'frame_number', 'timestamp_display', 'confidence_display', 'image_preview_thumb', 'created_at_display']
-    list_filter = ['record_log__camera_ip', 'created_at']
-    search_fields = ['record_log__camera_ip', 'record_log__file_path', 'image_path']
-    readonly_fields = ['record_log', 'frame_number', 'timestamp', 'image_path', 'confidence', 'bbox', 'created_at', 'image_preview_large']
+    list_display = ['id', 'camera_ip_display', 'record_log_link', 'frame_number', 'timestamp_display', 'confidence_display', 'caption_status_display', 'image_preview_thumb', 'created_at_display']
+    list_filter = ['caption_status', 'record_log__camera_ip', 'created_at']
+    search_fields = ['record_log__camera_ip', 'record_log__file_path', 'image_path', 'caption']
+    readonly_fields = ['record_log', 'frame_number', 'timestamp', 'image_path', 'confidence', 'bbox', 'created_at', 'caption_generated_at', 'image_preview_large']
     date_hierarchy = 'created_at'
     list_per_page = 50
     ordering = ['-created_at']
+    actions = ['generate_captions_for_all_pending']
 
     fieldsets = (
         ('关联信息', {
@@ -302,6 +303,10 @@ class PersonDetectionAdmin(admin.ModelAdmin):
         }),
         ('图片信息', {
             'fields': ('image_path', 'image_preview_large', 'created_at')
+        }),
+        ('图片描述', {
+            'fields': ('caption_status', 'caption', 'caption_zh', 'keywords', 'caption_generated_at'),
+            'classes': ('collapse',)
         }),
     )
 
@@ -371,13 +376,85 @@ class PersonDetectionAdmin(admin.ModelAdmin):
             if obj.bbox:
                 bbox_html = f"<p><strong>边界框坐标：</strong>{obj.bbox}</p>"
 
+            caption_html = ""
+            if obj.caption:
+                caption_html = f'''
+                <div style="margin-top: 10px; padding: 10px; background: #f0f8ff; border-left: 4px solid #0066cc; border-radius: 4px;">
+                    <p style="margin: 0;"><strong>图片描述：</strong>{obj.caption}</p>
+                </div>
+                '''
+
             html = f'''
             <div style="margin-top: 10px;">
                 <p><strong>图片URL：</strong><a href="{image_url}" target="_blank">{image_url}</a></p>
                 {bbox_html}
+                {caption_html}
                 <img src="{image_url}" style="max-width: 800px; height: auto; border: 2px solid #0066cc; border-radius: 8px; margin-top: 10px;"/>
             </div>
             '''
             return mark_safe(html)
         return "-"
     image_preview_large.short_description = '图片预览'
+
+    def caption_status_display(self, obj):
+        """显示描述生成状态（带颜色和图标）"""
+        status_info = {
+            'pending': {'color': '#999', 'icon': '⏳', 'text': '待生成'},
+            'processing': {'color': '#0066cc', 'icon': '🔄', 'text': '生成中'},
+            'completed': {'color': '#28a745', 'icon': '✓', 'text': '已完成'},
+            'failed': {'color': '#ff4444', 'icon': '❌', 'text': '失败'},
+        }
+        info = status_info.get(obj.caption_status, {'color': '#999', 'icon': '?', 'text': obj.caption_status})
+
+        # 如果已完成，显示描述
+        if obj.caption_status == 'completed' and obj.caption:
+            # 尽量显示更多内容，超过100字符才省略
+            max_length = 100
+            display_text = obj.caption if len(obj.caption) <= max_length else obj.caption[:max_length] + '...'
+
+            # 完整内容用于鼠标悬停显示
+            full_caption = obj.caption.replace('"', '&quot;').replace("'", '&#39;')
+
+            return format_html(
+                '<span style="color: {}; font-weight: bold;">{} {}</span><br/>'
+                '<small style="color: #666; cursor: help; display: block; max-width: 300px; word-wrap: break-word;" title="{}">{}</small>',
+                info['color'], info['icon'], info['text'], full_caption, display_text
+            )
+
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{} {}</span>',
+            info['color'], info['icon'], info['text']
+        )
+    caption_status_display.short_description = '描述状态'
+    caption_status_display.admin_order_field = 'caption_status'
+
+    def generate_captions_for_all_pending(self, request, queryset):
+        """手动触发 BLIP2 批量生成图片描述（处理所有 pending 状态的图片）"""
+        from apps.cameras.tasks import generate_captions_batch
+
+        # 查询所有 pending 状态的图片数量
+        pending_count = self.model.objects.filter(caption_status='pending').count()
+
+        if pending_count == 0:
+            self.message_user(
+                request,
+                '当前没有待处理的图片（caption_status=pending）',
+                level='warning'
+            )
+            return
+
+        # 触发批量任务
+        result = generate_captions_batch.delay()
+
+        self.message_user(
+            request,
+            f'✓ 已提交批量描述生成任务到队列！\n'
+            f'- 待处理图片数: {pending_count} 张\n'
+            f'- 任务ID: {result.id}\n'
+            f'- 模型: BLIP2-FLAN-T5-XL\n'
+            f'- 说明: 任务将在 video_analysis 队列中依次执行，首次加载模型需要1-2分钟\n'
+            f'- 提示: 刷新页面查看进度，或查看 Celery Worker 日志',
+            level='success'
+        )
+
+    generate_captions_for_all_pending.short_description = '🚀 批量生成图片描述（BLIP2）'

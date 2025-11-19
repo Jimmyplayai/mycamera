@@ -83,6 +83,13 @@ class RecordLog(models.Model):
 
 class PersonDetection(models.Model):
     """人物检测记录"""
+    CAPTION_STATUS_CHOICES = [
+        ('pending', '待生成'),
+        ('processing', '生成中'),
+        ('completed', '已完成'),
+        ('failed', '失败'),
+    ]
+
     record_log = models.ForeignKey(
         RecordLog,
         on_delete=models.CASCADE,
@@ -96,6 +103,18 @@ class PersonDetection(models.Model):
     bbox = models.JSONField(null=True, blank=True, verbose_name="边界框坐标")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
 
+    # 图片描述相关字段
+    caption = models.TextField(null=True, blank=True, verbose_name="图片描述(英文)")
+    caption_zh = models.TextField(null=True, blank=True, verbose_name="图片描述(中文)")
+    keywords = models.JSONField(null=True, blank=True, verbose_name="关键词列表")
+    caption_status = models.CharField(
+        max_length=20,
+        choices=CAPTION_STATUS_CHOICES,
+        default='pending',
+        verbose_name="描述生成状态"
+    )
+    caption_generated_at = models.DateTimeField(null=True, blank=True, verbose_name="描述生成时间")
+
     class Meta:
         verbose_name = "人物检测记录"
         verbose_name_plural = "人物检测记录"
@@ -103,6 +122,7 @@ class PersonDetection(models.Model):
         indexes = [
             models.Index(fields=['record_log', 'timestamp']),
             models.Index(fields=['-created_at']),
+            models.Index(fields=['caption_status']),
         ]
 
     def __str__(self):

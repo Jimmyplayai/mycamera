@@ -413,3 +413,198 @@ def process_batch(model, frames, frame_info, log, output_dir, video_filename,
                 logger.debug(f"保存人物检测: 帧{frame_number}, 时间{timestamp:.1f}s, 置信度{best_detection['confidence']:.2f}")
 
     return {'count': detection_count, 'last_time': last_time if detection_count > 0 else None}
+
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    time_limit=600,
+    soft_time_limit=540,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=600,
+    retry_jitter=True
+)
+def generate_captions_batch(self):
+    """
+    批量生成图片描述（使用 BLIP2 模型）
+
+    由 Celery Beat 定时触发，每10分钟执行一次
+    查询所有 caption_status='pending' 的图片，批量生成英文描述
+    """
+    from apps.cameras.models import PersonDetection
+    from transformers import Blip2Processor, Blip2ForConditionalGeneration
+    from PIL import Image
+    from django.utils import timezone
+    import gc
+
+    model = None
+    processor = None
+
+    try:
+        # 配置参数
+        model_path = '/workspace/ai_project_data/camera_env/model/blip2-flan-t5-xl'
+        batch_size = int(os.getenv('BLIP2_BATCH_SIZE', '8'))  # 每批处理8张图片
+        max_images = int(os.getenv('BLIP2_MAX_IMAGES', '100'))  # 一次最多处理100张
+        use_gpu = os.getenv('USE_GPU', 'True').lower() in ('true', '1', 't')
+
+        logger.info("=" * 60)
+        logger.info("开始批量生成图片描述任务")
+        logger.info(f"配置: 模型=blip2-flan-t5-xl, 批量大小={batch_size}, 最大数量={max_images}, GPU={use_gpu}")
+
+        # 打印初始 GPU 状态
+        log_gpu_stats("【BLIP2任务开始】")
+
+        # 查询待处理的图片
+        pending_detections = PersonDetection.objects.filter(
+            caption_status='pending'
+        ).select_related('record_log').order_by('created_at')[:max_images]
+
+        count = pending_detections.count()
+        if count == 0:
+            logger.info("没有待处理的图片，任务结束")
+            return "没有待处理的图片"
+
+        logger.info(f"找到 {count} 张待处理图片，开始批量处理...")
+
+        # 清理 GPU 缓存
+        if use_gpu and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        # 加载 BLIP2 模型
+        device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
+        logger.info(f"开始加载 BLIP2 模型: {model_path} (使用8-bit量化)")
+
+        processor = Blip2Processor.from_pretrained(model_path)
+
+        if device == 'cuda':
+            # 使用 8-bit 量化以减少显存占用和加快加载速度
+            model = Blip2ForConditionalGeneration.from_pretrained(
+                model_path,
+                load_in_8bit=True,
+                device_map='auto',
+                torch_dtype=torch.float16
+            )
+            logger.info(f"BLIP2 模型加载完成 (8-bit量化)，使用设备: {device}")
+        else:
+            # CPU 模式不使用量化
+            model = Blip2ForConditionalGeneration.from_pretrained(
+                model_path,
+                torch_dtype=torch.float32
+            )
+            model.to(device)
+            logger.info(f"BLIP2 模型加载完成，使用设备: {device}")
+        log_gpu_stats("【BLIP2模型加载后】")
+
+        # 批量处理图片
+        processed_count = 0
+        failed_count = 0
+        total_batches = (count + batch_size - 1) // batch_size
+
+        for batch_idx in range(0, count, batch_size):
+            batch_num = batch_idx // batch_size + 1
+            batch = list(pending_detections[batch_idx:batch_idx + batch_size])
+
+            logger.info(f"处理第 {batch_num}/{total_batches} 批，共 {len(batch)} 张图片")
+
+            # 加载图片
+            images = []
+            valid_detections = []
+
+            for detection in batch:
+                try:
+                    if not os.path.exists(detection.image_path):
+                        logger.warning(f"图片不存在: {detection.image_path}")
+                        detection.caption_status = 'failed'
+                        detection.save(update_fields=['caption_status'])
+                        failed_count += 1
+                        continue
+
+                    img = Image.open(detection.image_path).convert('RGB')
+                    images.append(img)
+                    valid_detections.append(detection)
+
+                except Exception as e:
+                    logger.error(f"图片加载失败 {detection.image_path}: {e}")
+                    detection.caption_status = 'failed'
+                    detection.save(update_fields=['caption_status'])
+                    failed_count += 1
+
+            if not images:
+                logger.warning(f"第 {batch_num} 批没有有效图片，跳过")
+                continue
+
+            # 批量推理
+            try:
+                logger.debug(f"开始推理 {len(images)} 张图片...")
+
+                # 标记为处理中
+                for detection in valid_detections:
+                    detection.caption_status = 'processing'
+                    detection.save(update_fields=['caption_status'])
+
+                # BLIP2 推理
+                inputs = processor(images=images, return_tensors="pt").to(device)
+
+                with torch.no_grad():
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_length=50,
+                        num_beams=5,  # 使用 beam search 提高质量
+                        early_stopping=True
+                    )
+
+                captions = processor.batch_decode(generated_ids, skip_special_tokens=True)
+
+                # 保存结果到数据库
+                for detection, caption in zip(valid_detections, captions):
+                    detection.caption = caption.strip()
+                    detection.caption_status = 'completed'
+                    detection.caption_generated_at = timezone.now()
+                    detection.save(update_fields=['caption', 'caption_status', 'caption_generated_at'])
+                    processed_count += 1
+
+                    logger.debug(f"✓ {os.path.basename(detection.image_path)}: {caption}")
+
+                logger.info(f"第 {batch_num} 批处理完成，成功 {len(valid_detections)} 张")
+
+            except Exception as e:
+                logger.error(f"第 {batch_num} 批推理失败: {e}", exc_info=True)
+                # 将这批图片标记为失败
+                for detection in valid_detections:
+                    detection.caption_status = 'failed'
+                    detection.save(update_fields=['caption_status'])
+                failed_count += len(valid_detections)
+
+        # 打印最终结果
+        logger.info("=" * 60)
+        logger.info(f"批量处理完成: 成功 {processed_count} 张, 失败 {failed_count} 张")
+        log_gpu_stats("【BLIP2任务完成】")
+
+        return f"批量生成图片描述完成: 成功 {processed_count} 张, 失败 {failed_count} 张"
+
+    except Exception as e:
+        logger.error(f"批量生成图片描述任务失败: {str(e)}", exc_info=True)
+        raise
+
+    finally:
+        # 清理资源
+        if model is not None:
+            try:
+                del model
+            except:
+                pass
+
+        if processor is not None:
+            try:
+                del processor
+            except:
+                pass
+
+        # 清理 GPU 缓存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        gc.collect()
+        logger.info("BLIP2 模型资源已释放")
