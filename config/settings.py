@@ -214,3 +214,46 @@ CELERY_BEAT_SCHEDULE = {
         },
     },
 }
+
+# 日志配置
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{levelname}] {asctime} {name} {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+    },
+    'handlers': {
+        'console_info': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stdout',  # 输出到 stdout → .log 文件
+            'formatter': 'verbose',
+        },
+        'console_error': {
+            'level': 'WARNING',  # 只有 WARNING 以上才输出
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stderr',  # 输出到 stderr → .err 文件
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console_info', 'console_error'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'apps.cameras': {
+            'handlers': ['console_info', 'console_error'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'celery': {
+            'handlers': ['console_info', 'console_error'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    }
+}

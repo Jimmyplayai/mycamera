@@ -76,7 +76,7 @@ def record_camera_task(self, ip, user, password, port, path, base_dir=None):
 
     if base_dir is None:
         base_dir = os.getenv("CAMERA_BASE_DIR", "/workspace/ai_project_data/camera_env/server_sync/ResouceData/CameraRecordings")
-    print(f"录制摄像头流: {ip}")
+    logger.info(f"录制摄像头流: {ip}")
     tz = pytz.timezone("Asia/Shanghai")  # 设置时区
     now = datetime.now(tz)
     minute = now.strftime("%M")  # 当前分钟
@@ -200,7 +200,7 @@ def analyze_video_for_person(self, record_log_id):
         use_gpu = os.getenv('USE_GPU', 'True').lower() in ('true', '1', 't')
 
         logger.info(f"开始分析视频: {log.file_path}")
-        logger.info(f"配置: 采样间隔={sample_interval}s, 置信度={confidence_threshold}, GPU={use_gpu}")
+        logger.info(f"配置: 采样间隔={sample_interval}s, 置信度={confidence_threshold}, 去重窗口={dedup_window}s, GPU={use_gpu}")
 
         # 打印初始 GPU 状态
         log_gpu_stats("【任务开始】")
@@ -305,6 +305,8 @@ def analyze_video_for_person(self, record_log_id):
                 last_detection_time
             )
             detection_count += result['count']
+            if result['last_time'] is not None:
+                last_detection_time = result['last_time']
 
         cap.release()
 
@@ -361,6 +363,9 @@ def process_batch(model, frames, frame_info, log, output_dir, video_filename,
     """
     批量处理帧并保存检测结果
 
+    Args:
+        last_detection_time: 上一次保存检测的时间戳，用于去重判断
+
     Returns:
         dict: {'count': 检测数量, 'last_time': 最后检测时间}
     """
@@ -387,8 +392,11 @@ def process_batch(model, frames, frame_info, log, output_dir, video_filename,
 
         # 如果检测到人物
         if person_detections:
+            time_since_last = timestamp - last_time
+
             # 去重：检查时间窗口
-            if timestamp - last_time >= dedup_window:
+            # 只有当距离上次检测 >= dedup_window 时才保存
+            if time_since_last >= dedup_window:
                 # 保存最高置信度的检测
                 best_detection = max(person_detections, key=lambda x: x['confidence'])
 
@@ -408,9 +416,13 @@ def process_batch(model, frames, frame_info, log, output_dir, video_filename,
                 )
 
                 detection_count += 1
+                # 更新last_time，确保批次内后续帧使用新的时间进行判断
                 last_time = timestamp
 
-                logger.debug(f"保存人物检测: 帧{frame_number}, 时间{timestamp:.1f}s, 置信度{best_detection['confidence']:.2f}")
+                logger.debug(f"✓ 保存人物检测: 帧{frame_number}, 时间{timestamp:.1f}s, 置信度{best_detection['confidence']:.2f}, 距上次{time_since_last:.1f}s")
+            else:
+                # 跳过：距离上次检测太近
+                logger.debug(f"✗ 跳过重复检测: 帧{frame_number}, 时间{timestamp:.1f}s, 距上次仅{time_since_last:.1f}s (需>={dedup_window}s)")
 
     return {'count': detection_count, 'last_time': last_time if detection_count > 0 else None}
 
