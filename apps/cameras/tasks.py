@@ -7,16 +7,18 @@ import os
 import pytz
 import logging
 from django.utils import timezone
-import cv2
-import torch
-from ultralytics import YOLO
 from pathlib import Path
+
+# 注意：torch, cv2, YOLO 等重型依赖移到函数内部延迟导入
+# 避免 celery worker 启动时就加载这些模块占用大量内存
 
 logger = logging.getLogger(__name__)
 
 
 def get_gpu_stats():
     """获取 GPU 利用率和显存使用情况"""
+    import torch  # 延迟导入
+
     if not torch.cuda.is_available():
         return None
 
@@ -172,6 +174,9 @@ def analyze_video_for_person(self, record_log_id):
     """
     from apps.cameras.models import RecordLog, PersonDetection
     import gc
+    import cv2  # 延迟导入
+    import torch  # 延迟导入
+    from ultralytics import YOLO  # 延迟导入
 
     model = None
     cap = None
@@ -369,6 +374,7 @@ def process_batch(model, frames, frame_info, log, output_dir, video_filename,
     Returns:
         dict: {'count': 检测数量, 'last_time': 最后检测时间}
     """
+    import cv2  # 延迟导入
     from apps.cameras.models import PersonDetection
 
     detection_count = 0
@@ -453,6 +459,7 @@ def generate_captions_batch(self, detection_ids=None):
     from PIL import Image
     from django.utils import timezone
     import gc
+    import torch  # 延迟导入
 
     model = None
     processor = None
