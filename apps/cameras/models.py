@@ -141,3 +141,74 @@ class PersonDetection(models.Model):
 
         # 拼接 URL
         return f"{base_url}/CameraWarningPics/{relative_path}"
+
+
+class GPUMetrics(models.Model):
+    """GPU性能监控记录"""
+    TASK_TYPE_CHOICES = [
+        ('idle', '空闲'),
+        ('yolo', 'YOLOv8检测'),
+        ('blip2', 'BLIP2描述生成'),
+        ('other', '其他任务'),
+    ]
+
+    ALERT_LEVEL_CHOICES = [
+        ('normal', '正常'),
+        ('warning', '警告'),
+        ('critical', '严重'),
+    ]
+
+    timestamp = models.DateTimeField(auto_now_add=True, verbose_name="记录时间", db_index=True)
+    gpu_utilization = models.FloatField(verbose_name="GPU利用率(%)")
+    memory_used = models.IntegerField(verbose_name="已用显存(MB)")
+    memory_total = models.IntegerField(verbose_name="总显存(MB)")
+    memory_percent = models.FloatField(verbose_name="显存使用率(%)")
+    temperature = models.FloatField(null=True, blank=True, verbose_name="GPU温度(°C)")
+    task_type = models.CharField(
+        max_length=50,
+        choices=TASK_TYPE_CHOICES,
+        default='idle',
+        verbose_name="任务类型"
+    )
+    worker_name = models.CharField(max_length=100, null=True, blank=True, verbose_name="Worker名称")
+    alert_level = models.CharField(
+        max_length=20,
+        choices=ALERT_LEVEL_CHOICES,
+        default='normal',
+        verbose_name="告警级别"
+    )
+
+    class Meta:
+        verbose_name = "GPU监控记录"
+        verbose_name_plural = "GPU监控记录"
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['-timestamp']),
+            models.Index(fields=['task_type']),
+            models.Index(fields=['alert_level']),
+        ]
+
+    def __str__(self):
+        return f"{self.timestamp.strftime('%Y-%m-%d %H:%M:%S')} - GPU:{self.gpu_utilization}% 显存:{self.memory_percent}%"
+
+    def check_alert(self):
+        """检查并更新告警级别"""
+        # 严重告警：GPU利用率>95% 或 显存>95% 或 温度>85°C
+        if (self.gpu_utilization > 95 or
+            self.memory_percent > 95 or
+            (self.temperature and self.temperature > 85)):
+            self.alert_level = 'critical'
+        # 警告：GPU利用率>90%或<5% 或 显存>90% 或 温度>80°C
+        elif (self.gpu_utilization > 90 or
+              self.gpu_utilization < 5 or
+              self.memory_percent > 90 or
+              (self.temperature and self.temperature > 80)):
+            self.alert_level = 'warning'
+        else:
+            self.alert_level = 'normal'
+        return self.alert_level
+
+    def save(self, *args, **kwargs):
+        """保存前自动检查告警级别"""
+        self.check_alert()
+        super().save(*args, **kwargs)

@@ -148,6 +148,9 @@ USE_TZ = False
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATICFILES_DIRS = [
+    BASE_DIR / 'static',
+]
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -211,6 +214,14 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="*/10"),  # 每10分钟执行一次
         "options": {
             "expires": 540,  # 任务9分钟后过期，避免堆积
+        },
+    },
+    # 清理旧的GPU监控数据 - 每天凌晨2点执行
+    "cleanup_old_gpu_metrics": {
+        "task": "apps.cameras.tasks.cleanup_old_gpu_metrics",
+        "schedule": crontab(hour=2, minute=0),  # 每天凌晨2点执行
+        "kwargs": {
+            "days": 30,  # 保留30天数据
         },
     },
 }

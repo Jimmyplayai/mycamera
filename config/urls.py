@@ -18,8 +18,11 @@ from django.contrib import admin
 from django.urls import path
 from django.conf import settings
 from django.conf.urls.static import static
+from apps.cameras import views as cameras_views
 
 urlpatterns = [
+    path('admin/cameras/gpu-chart/', cameras_views.gpu_chart_view, name='gpu_chart'),
+    path('api/gpu-metrics/', cameras_views.gpu_metrics_data_api, name='gpu_metrics_api'),
     path('admin/', admin.site.urls),
 ]
 

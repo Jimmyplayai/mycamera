@@ -63,11 +63,44 @@ def get_gpu_stats():
         return None
 
 
-def log_gpu_stats(prefix=""):
-    """打印 GPU 状态日志"""
+def log_gpu_stats(prefix="", task_type="idle", worker_name=None):
+    """
+    打印 GPU 状态日志并保存到数据库
+
+    Args:
+        prefix: 日志前缀
+        task_type: 任务类型 (idle/yolo/blip2/other)
+        worker_name: Worker名称
+    """
+    from apps.cameras.models import GPUMetrics
+
     stats = get_gpu_stats()
     if stats:
+        # 打印日志（保留原有功能）
         logger.info(f"{prefix}GPU状态: 利用率={stats['gpu_util']}, 显存={stats['mem_used']}/{stats['mem_total']} ({stats['mem_percent']}), 温度={stats['temperature']}")
+
+        # 保存到数据库
+        try:
+            # 解析数值（去掉单位）
+            gpu_util = float(stats['gpu_util'].replace('%', ''))
+            mem_used = int(stats['mem_used'].replace('MB', ''))
+            mem_total = int(stats['mem_total'].replace('MB', ''))
+            mem_percent = float(stats['mem_percent'].replace('%', ''))
+            temp = float(stats['temperature'].replace('°C', '')) if stats.get('temperature') else None
+
+            # 创建记录
+            GPUMetrics.objects.create(
+                gpu_utilization=gpu_util,
+                memory_used=mem_used,
+                memory_total=mem_total,
+                memory_percent=mem_percent,
+                temperature=temp,
+                task_type=task_type,
+                worker_name=worker_name
+            )
+        except Exception as e:
+            logger.error(f"保存GPU监控数据失败: {e}")
+
     return stats
 
 
@@ -208,7 +241,7 @@ def analyze_video_for_person(self, record_log_id):
         logger.info(f"配置: 采样间隔={sample_interval}s, 置信度={confidence_threshold}, 去重窗口={dedup_window}s, GPU={use_gpu}")
 
         # 打印初始 GPU 状态
-        log_gpu_stats("【任务开始】")
+        log_gpu_stats("【任务开始】", task_type="yolo", worker_name=self.request.hostname)
 
         # 清理 GPU 缓存
         if use_gpu and torch.cuda.is_available():
@@ -229,7 +262,7 @@ def analyze_video_for_person(self, record_log_id):
             model.to(device)
 
         logger.info(f"YOLO 模型加载完成，使用设备: {device}")
-        log_gpu_stats("【模型加载后】")
+        log_gpu_stats("【模型加载后】", task_type="yolo", worker_name=self.request.hostname)
 
         # 打开视频
         cap = cv2.VideoCapture(log.file_path)
@@ -321,7 +354,7 @@ def analyze_video_for_person(self, record_log_id):
         log.save(update_fields=['analysis_status', 'analysis_time'])
 
         # 打印最终 GPU 状态
-        log_gpu_stats("【分析完成】")
+        log_gpu_stats("【分析完成】", task_type="yolo", worker_name=self.request.hostname)
 
         logger.info(f"视频分析完成: {log.file_path}, 检测到 {detection_count} 个人物")
         return f"分析完成，检测到 {detection_count} 个人物"
@@ -476,7 +509,7 @@ def generate_captions_batch(self, detection_ids=None):
         logger.info(f"配置: 模型=blip2-flan-t5-xl, 批量大小={batch_size}, 最大数量={max_images}, GPU={use_gpu}")
 
         # 打印初始 GPU 状态
-        log_gpu_stats("【BLIP2任务开始】")
+        log_gpu_stats("【BLIP2任务开始】", task_type="blip2", worker_name=self.request.hostname)
 
         # 查询待处理的图片
         if detection_ids:
@@ -527,7 +560,7 @@ def generate_captions_batch(self, detection_ids=None):
             )
             model.to(device)
             logger.info(f"BLIP2 模型加载完成，使用设备: {device}")
-        log_gpu_stats("【BLIP2模型加载后】")
+        log_gpu_stats("【BLIP2模型加载后】", task_type="blip2", worker_name=self.request.hostname)
 
         # 批量处理图片
         processed_count = 0
@@ -612,7 +645,7 @@ def generate_captions_batch(self, detection_ids=None):
         # 打印最终结果
         logger.info("=" * 60)
         logger.info(f"批量处理完成: 成功 {processed_count} 张, 失败 {failed_count} 张")
-        log_gpu_stats("【BLIP2任务完成】")
+        log_gpu_stats("【BLIP2任务完成】", task_type="blip2", worker_name=self.request.hostname)
 
         return f"批量生成图片描述完成: 成功 {processed_count} 张, 失败 {failed_count} 张"
 
@@ -640,3 +673,30 @@ def generate_captions_batch(self, detection_ids=None):
 
         gc.collect()
         logger.info("BLIP2 模型资源已释放")
+
+
+@shared_task(bind=True)
+def cleanup_old_gpu_metrics(self, days=30):
+    """
+    清理旧的GPU监控数据
+
+    Args:
+        days: 保留最近N天的数据，默认30天
+    """
+    from apps.cameras.models import GPUMetrics
+    from datetime import timedelta
+
+    try:
+        # 计算截止时间
+        cutoff_date = timezone.now() - timedelta(days=days)
+
+        # 删除旧数据
+        deleted_count = GPUMetrics.objects.filter(timestamp__lt=cutoff_date).delete()[0]
+
+        logger.info(f"GPU监控数据清理完成: 删除了 {deleted_count} 条 {days} 天前的记录")
+        return f"清理完成，删除了 {deleted_count} 条记录"
+
+    except Exception as e:
+        logger.error(f"GPU监控数据清理失败: {e}")
+        raise
+

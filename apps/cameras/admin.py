@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import RecordLog, PersonDetection
+from .models import RecordLog, PersonDetection, GPUMetrics
 
 
 @admin.register(RecordLog)
@@ -495,3 +495,171 @@ class PersonDetectionAdmin(admin.ModelAdmin):
         )
 
     generate_captions_for_all_pending.short_description = '🚀 生成所有待处理图片的描述（忽略选择）'
+
+
+@admin.register(GPUMetrics)
+class GPUMetricsAdmin(admin.ModelAdmin):
+    list_display = ['timestamp_display', 'gpu_utilization_display', 'memory_display', 'temperature_display', 'task_type_display', 'worker_name_short', 'alert_level_display']
+    list_filter = ['task_type', 'alert_level', 'timestamp']
+    search_fields = ['worker_name']
+    readonly_fields = ['timestamp', 'gpu_utilization', 'memory_used', 'memory_total', 'memory_percent', 'temperature', 'task_type', 'worker_name', 'alert_level']
+    date_hierarchy = 'timestamp'
+    list_per_page = 100
+    ordering = ['-timestamp']
+    actions = ['export_to_csv']
+
+    # 禁用添加和修改（只允许查看）
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    fieldsets = (
+        ('GPU性能指标', {
+            'fields': ('timestamp', 'gpu_utilization', 'memory_used', 'memory_total', 'memory_percent', 'temperature')
+        }),
+        ('任务信息', {
+            'fields': ('task_type', 'worker_name')
+        }),
+        ('告警信息', {
+            'fields': ('alert_level',)
+        }),
+    )
+
+    def timestamp_display(self, obj):
+        """格式化时间"""
+        return obj.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+    timestamp_display.short_description = '记录时间'
+    timestamp_display.admin_order_field = 'timestamp'
+
+    def gpu_utilization_display(self, obj):
+        """显示GPU利用率（带颜色）"""
+        util = obj.gpu_utilization
+        if util > 90:
+            color = '#ff4444'  # 红色-过高
+        elif util > 70:
+            color = '#ffa500'  # 橙色-较高
+        elif util > 30:
+            color = '#28a745'  # 绿色-正常
+        elif util > 5:
+            color = '#0066cc'  # 蓝色-较低
+        else:
+            color = '#ffa500'  # 橙色-过低
+
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{}%</span>',
+            color, f'{util:.1f}'
+        )
+    gpu_utilization_display.short_description = 'GPU利用率'
+    gpu_utilization_display.admin_order_field = 'gpu_utilization'
+
+    def memory_display(self, obj):
+        """显示显存使用情况"""
+        mem_percent = obj.memory_percent
+        if mem_percent > 90:
+            color = '#ff4444'
+        elif mem_percent > 70:
+            color = '#ffa500'
+        else:
+            color = '#28a745'
+
+        return format_html(
+            '<span style="color: {};">{} MB / {} MB ({}%)</span>',
+            color, obj.memory_used, obj.memory_total, f'{mem_percent:.1f}'
+        )
+    memory_display.short_description = '显存使用'
+    memory_display.admin_order_field = 'memory_percent'
+
+    def temperature_display(self, obj):
+        """显示温度（带颜色）"""
+        if obj.temperature is None:
+            return '-'
+
+        temp = obj.temperature
+        if temp > 85:
+            color = '#ff4444'
+        elif temp > 80:
+            color = '#ffa500'
+        else:
+            color = '#28a745'
+
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{}°C</span>',
+            color, f'{temp:.1f}'
+        )
+    temperature_display.short_description = 'GPU温度'
+    temperature_display.admin_order_field = 'temperature'
+
+    def task_type_display(self, obj):
+        """显示任务类型（带图标）"""
+        icons = {
+            'idle': '💤',
+            'yolo': '🎯',
+            'blip2': '🖼️',
+            'other': '⚙️',
+        }
+        icon = icons.get(obj.task_type, '❓')
+        return format_html('{} {}', icon, obj.get_task_type_display())
+    task_type_display.short_description = '任务类型'
+    task_type_display.admin_order_field = 'task_type'
+
+    def worker_name_short(self, obj):
+        """显示Worker名称（简短版）"""
+        if not obj.worker_name:
+            return '-'
+        # 只显示主机名部分
+        return obj.worker_name.split('@')[-1] if '@' in obj.worker_name else obj.worker_name
+    worker_name_short.short_description = 'Worker'
+
+    def alert_level_display(self, obj):
+        """显示告警级别（带颜色和图标）"""
+        level_info = {
+            'normal': {'color': '#28a745', 'icon': '✓', 'text': '正常'},
+            'warning': {'color': '#ffa500', 'icon': '⚠️', 'text': '警告'},
+            'critical': {'color': '#ff4444', 'icon': '🔥', 'text': '严重'},
+        }
+        info = level_info.get(obj.alert_level, {'color': '#999', 'icon': '?', 'text': obj.alert_level})
+
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{} {}</span>',
+            info['color'], info['icon'], info['text']
+        )
+    alert_level_display.short_description = '告警级别'
+    alert_level_display.admin_order_field = 'alert_level'
+
+    def export_to_csv(self, request, queryset):
+        """导出为CSV文件"""
+        import csv
+        from django.http import HttpResponse
+        from datetime import datetime
+
+        response = HttpResponse(content_type='text/csv; charset=utf-8-sig')
+        filename = f'gpu_metrics_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+        writer = csv.writer(response)
+        writer.writerow(['记录时间', 'GPU利用率(%)', '已用显存(MB)', '总显存(MB)', '显存使用率(%)', 'GPU温度(°C)', '任务类型', 'Worker名称', '告警级别'])
+
+        for obj in queryset:
+            writer.writerow([
+                obj.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                f'{obj.gpu_utilization:.2f}',
+                obj.memory_used,
+                obj.memory_total,
+                f'{obj.memory_percent:.2f}',
+                f'{obj.temperature:.2f}' if obj.temperature else '',
+                obj.get_task_type_display(),
+                obj.worker_name or '',
+                obj.get_alert_level_display(),
+            ])
+
+        return response
+    export_to_csv.short_description = '📊 导出选中记录为CSV'
+
+    def changelist_view(self, request, extra_context=None):
+        """添加图表链接到列表页"""
+        extra_context = extra_context or {}
+        extra_context['show_chart_link'] = True
+        return super().changelist_view(request, extra_context)
+

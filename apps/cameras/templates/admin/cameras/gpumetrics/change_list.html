@@ -1,0 +1,17 @@
+{% extends "admin/change_list.html" %}
+{% load static %}
+
+{% block content_title %}
+    <h1>{{ title }}</h1>
+    {% if show_chart_link %}
+    <div style="margin: 15px 0; padding: 10px; background: #f0f8ff; border-left: 4px solid #0066cc; border-radius: 4px;">
+        <a href="{% url 'gpu_chart' %}"
+           style="display: inline-block; padding: 10px 20px; background: #0066cc; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
+            📊 查看GPU监控图表
+        </a>
+        <span style="margin-left: 15px; color: #666;">
+            实时查看GPU利用率、显存使用和温度变化趋势
+        </span>
+    </div>
+    {% endif %}
+{% endblock %}
