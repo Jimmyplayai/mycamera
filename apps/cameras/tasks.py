@@ -132,14 +132,22 @@ def record_camera_task(self, ip, user, password, port, path, base_dir=None):
 
     try:
         # 添加超时保护：ffmpeg录制60秒，但给它75秒的超时时间
+        # 重新编码以避免 HEVC NAL 单元错误，使用更稳定的 H.264 编码
         subprocess.run([
             "ffmpeg",
             "-loglevel", "error",
             "-rtsp_transport", "tcp",
             "-i", rtsp_url,
-            "-c:v", "copy",
-            "-an",
-            "-t", "60",
+            # 编码参数：重新编码为 H.264，避免原始流的编码问题
+            "-c:v", "libx264",           # 使用 H.264 编码器
+            "-preset", "ultrafast",       # 快速编码
+            "-crf", "23",                 # 质量控制（18-28，越小质量越好）
+            "-r", "25",                   # 固定帧率为 25fps
+            "-an",                        # 禁用音频
+            "-t", "60",                   # 录制 60 秒
+            # 错误处理参数
+            "-err_detect", "ignore_err",  # 忽略非致命错误
+            "-fflags", "+genpts",         # 生成时间戳
             "-y", output_file
         ], check=True, timeout=75)
 
@@ -264,13 +272,46 @@ def analyze_video_for_person(self, record_log_id):
         logger.info(f"YOLO 模型加载完成，使用设备: {device}")
         log_gpu_stats("【模型加载后】", task_type="yolo", worker_name=self.request.hostname)
 
-        # 打开视频
+        # 打开视频并验证
         cap = cv2.VideoCapture(log.file_path)
+
+        # 验证视频是否成功打开
+        if not cap.isOpened():
+            error_msg = f"无法打开视频文件: {log.file_path}"
+            logger.error(error_msg)
+            log.analysis_status = 'failed'
+            log.save(update_fields=['analysis_status'])
+            return error_msg
+
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / fps if fps > 0 else 0
+
+        # 验证视频属性有效性
+        if fps <= 0 or total_frames <= 0:
+            error_msg = f"视频文件损坏或格式错误: FPS={fps}, 帧数={total_frames}"
+            logger.error(error_msg)
+            cap.release()
+            log.analysis_status = 'failed'
+            log.save(update_fields=['analysis_status'])
+            return error_msg
+
+        duration = total_frames / fps
 
         logger.info(f"视频信息: FPS={fps}, 总帧数={total_frames}, 时长={duration:.1f}秒")
+
+        # 尝试读取第一帧以验证解码能力
+        test_ret, test_frame = cap.read()
+        if not test_ret or test_frame is None:
+            error_msg = f"无法解码视频帧，视频可能损坏"
+            logger.error(error_msg)
+            cap.release()
+            log.analysis_status = 'failed'
+            log.save(update_fields=['analysis_status'])
+            return error_msg
+
+        # 重置到开头
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        logger.info(f"视频验证通过，开始分析...")
 
         # 创建输出目录
         video_filename = os.path.basename(log.file_path).replace('.mp4', '')
@@ -312,7 +353,15 @@ def analyze_video_for_person(self, record_log_id):
         while True:
             ret, frame = cap.read()
             if not ret:
+                # 视频读取结束（正常到达末尾或文件损坏）
+                logger.info(f"视频读取结束，已处理 {current_frame}/{total_frames} 帧")
                 break
+
+            # 验证帧有效性
+            if frame is None or frame.size == 0:
+                logger.warning(f"帧 {current_frame} 无效（空帧），跳过")
+                current_frame += 1
+                continue
 
             # 按间隔采样
             if current_frame % frame_interval == 0:
